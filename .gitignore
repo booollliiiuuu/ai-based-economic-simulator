@@ -32,7 +32,7 @@ build/
 ### VS Code ###
 .vscode/
 
-### OS Junk (Mac/Windows/Linux) ###
+### OS Junk ###
 .DS_Store
 .DS_Store?
 ._*
@@ -41,8 +41,20 @@ build/
 ehthumbs.db
 Thumbs.db
 
-### SECURITY & LOGS (Crucial) ###
-*.log
+### SECURITY & CREDENTIALS (DO NOT REMOVE) ###
+# 1. Block the specific GCP Key file
+gcp-account-key.json
+service-account-key.json
+
+# 2. Block any JSON file that looks like a key
+*credential*.json
+*secret*.json
+*-key.json
+
+# 3. Block Environment Configs
 .env
-secrets.properties
+.env.local
 application-secrets.properties
+
+# 4. Block Logs
+*.log
