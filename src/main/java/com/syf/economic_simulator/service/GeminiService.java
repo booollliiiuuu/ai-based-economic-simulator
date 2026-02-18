@@ -11,7 +11,9 @@ import org.springframework.ai.converter.BeanOutputConverter;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.stereotype.Service;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class GeminiService {
@@ -37,10 +39,7 @@ public class GeminiService {
         }
 
         response.setTwinProfile(twin);
-
-        updateScenariosWithSurvival(scenarios, simResult.getScenarioSurvivalRates());
-        response.setScenarios(scenarios);
-
+        response.setScenarios(mapScenariosToSurvival(scenarios, simResult.getScenarioSurvivalRates()));
         response.setScore(simResult.getOverallScore());
         response.setStatus(simResult.getOverallScore() > 70 ? AnalysisResponse.Status.APPROVED : AnalysisResponse.Status.REJECTED);
         response.setAiNarrative(simResult.getNarrative());
@@ -48,13 +47,21 @@ public class GeminiService {
         return response;
     }
 
-    private void updateScenariosWithSurvival(List<Scenario> original, List<ScenarioResult> results) {
-        for (Scenario s : original) {
-            results.stream()
-                    .filter(r -> r.getName().equalsIgnoreCase(s.getName()))
-                    .findFirst()
-                    .ifPresent(res -> s.setSurvival(res.getSurvivalRate()));
+    private Map<Scenario, Integer> mapScenariosToSurvival(List<Scenario> originalScenarios, List<ScenarioResult> aiResults) {
+        Map<Scenario, Integer> resultMap = new HashMap<>();
+
+        for (Scenario scenario : originalScenarios) {
+            int survivalRate = -1;
+            for (ScenarioResult res : aiResults) {
+                if (res.getName().equalsIgnoreCase(scenario.getName())) {
+                    survivalRate = res.getSurvivalRate();
+                    break;
+                }
+            }
+            resultMap.put(scenario, survivalRate);
         }
+
+        return resultMap;
     }
 
 
@@ -85,7 +92,6 @@ public class GeminiService {
             2. 'likelihood': 0.0-1.0.
             3. 'impact_type': 'income_cut', 'expense_hike', 'one_time_loss'.
             4. 'impact_value': e.g. 0.5.
-            5. 'survival': Set to 0.
             Return JSON list only.
             """.formatted(request.getApplicantDetails().getJobTitle(), request.getApplicantDetails().getSector(), request.getApplicantDetails().getCity());
         return chatClient.prompt().user(prompt).call().entity(converter);
@@ -110,7 +116,7 @@ public class GeminiService {
             
             OUTPUT:
             1. 'overallScore': 0-100 (Weighted average of survival).
-            2. 'narrative': Brief summary explaining the biggest risk.
+            2. 'narrative': Brief summary.
             3. 'scenarioSurvivalRates': List matching input scenarios with 'survivalRate' (0-100).
             
             Return strictly JSON matching the schema.
@@ -125,22 +131,14 @@ public class GeminiService {
 
     @Data
     public static class SimulationResult {
-        @JsonProperty("overallScore")
         private int overallScore;
-
-        @JsonProperty("narrative")
         private String narrative;
-
-        @JsonProperty("scenarioSurvivalRates")
         private List<ScenarioResult> scenarioSurvivalRates;
     }
 
     @Data
     public static class ScenarioResult {
-        @JsonProperty("name")
         private String name;
-
-        @JsonProperty("survivalRate")
         private int survivalRate;
     }
 }
