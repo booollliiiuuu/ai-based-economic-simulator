@@ -3,7 +3,6 @@ package com.syf.economic_simulator.dto;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 import java.util.List;
-import java.util.Map;
 
 @Data
 public class AnalysisResponse {
@@ -12,15 +11,13 @@ public class AnalysisResponse {
     private String applicationId;
 
     private String name;
-
     private int score;
-
-    private Status status;
+    private String status;
 
     @JsonProperty("twin_profile")
     private DigitalTwin twinProfile;
 
-    private Map<Scenario, Integer> scenarios;
+    private List<Scenario> scenarios;
 
     @JsonProperty("ai_narrative")
     private String aiNarrative;
@@ -39,29 +36,16 @@ public class AnalysisResponse {
         @JsonProperty("income_volatility")
         private String incomeVolatility;
 
-        private Archetype archetype;
+        private String archetype;
     }
 
     @Data
     public static class Scenario {
         private String name;
-        private double likelihood;
+        private double probability;
 
-        @JsonProperty("impact_type")
-        private String impactType;
-
-        @JsonProperty("impact_value")
-        private double impactValue;
-    }
-
-    public enum Status{
-        APPROVED,
-        REJECTED
-    }
-
-    public enum Archetype{
-        HIGH_RISK,
-        MODERATE_RISK,
-        LOW_RISK
+        @JsonProperty("survival_rate")
+        private int survivalRate;
     }
 }
+

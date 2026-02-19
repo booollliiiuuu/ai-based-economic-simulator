@@ -6,19 +6,26 @@ import com.syf.economic_simulator.service.GeminiService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
+
 @RestController
 @RequestMapping("/api/v1/simulation")
 @CrossOrigin(origins = "*")
 public class SimulationController {
 
-    private final GeminiService GeminiService;
+    private final GeminiService geminiService;
 
-    public SimulationController(GeminiService GeminiService) {
-        this.GeminiService = GeminiService;
+    public SimulationController(GeminiService geminiService) {
+        this.geminiService = geminiService;
     }
 
     @PostMapping("/analyze")
-    public ResponseEntity<AnalysisResponse> analyze(@RequestBody ApplicantRequest request) {
-        return ResponseEntity.ok(GeminiService.processApplicant(request));
+    public ResponseEntity<List<AnalysisResponse>> analyze(
+            @RequestBody ApplicantRequest request) {
+
+        List<AnalysisResponse> responses =
+                geminiService.processApplicant(request);
+
+        return ResponseEntity.ok(responses);
     }
 }

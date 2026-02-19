@@ -4,130 +4,205 @@ import com.syf.economic_simulator.dto.AnalysisResponse;
 import com.syf.economic_simulator.dto.AnalysisResponse.DigitalTwin;
 import com.syf.economic_simulator.dto.AnalysisResponse.Scenario;
 import com.syf.economic_simulator.dto.ApplicantRequest;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.converter.BeanOutputConverter;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
 
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
 public class GeminiService {
 
     private final ChatClient chatClient;
+    private final RestTemplate restTemplate;
 
-    public GeminiService(ChatClient.Builder chatClientBuilder) {
+
+    public GeminiService(ChatClient.Builder chatClientBuilder,RestTemplate restTemplate) {
         this.chatClient = chatClientBuilder.build();
+        this.restTemplate = restTemplate;
     }
 
-    public AnalysisResponse processApplicant(ApplicantRequest request) {
+    // ✅ NOW RETURNS LIST
+    public List<AnalysisResponse> processApplicant(ApplicantRequest request) {
 
+        // 1️⃣ Generate Digital Twin
         DigitalTwin twin = generateTwin(request);
 
+        // 2️⃣ Generate Scenarios
         List<Scenario> scenarios = generateScenarios(request);
 
+        // 3️⃣ Run Simulation
         SimulationResult simResult = runSimulation(twin, scenarios);
 
-        AnalysisResponse response = new AnalysisResponse();
-        response.setApplicationId(request.getApplicationId());
+        // 4️⃣ Build RAG Response
+        AnalysisResponse ragResponse = new AnalysisResponse();
+        ragResponse.setApplicationId(request.getApplicationId());
+
         if (request.getApplicantDetails() != null) {
-            response.setName(request.getApplicantDetails().getFullName());
+            ragResponse.setName(request.getApplicantDetails().getName());
         }
 
-        response.setTwinProfile(twin);
-        response.setScenarios(mapScenariosToSurvival(scenarios, simResult.getScenarioSurvivalRates()));
-        response.setScore(simResult.getOverallScore());
-        response.setStatus(simResult.getOverallScore() > 70 ? AnalysisResponse.Status.APPROVED : AnalysisResponse.Status.REJECTED);
-        response.setAiNarrative(simResult.getNarrative());
+        ragResponse.setTwinProfile(twin);
 
-        return response;
+        ragResponse.setScenarios(
+                mapScenariosToSurvival(
+                        scenarios,
+                        simResult != null
+                                ? simResult.getScenarioSurvivalRates()
+                                : Collections.emptyList()
+                )
+        );
+
+        int score = simResult != null ? simResult.getOverallScore() : 0;
+        ragResponse.setScore(score);
+        ragResponse.setStatus(score > 70 ? "APPROVED" : "REJECTED");
+
+        ragResponse.setAiNarrative(
+                simResult != null
+                        ? simResult.getNarrative()
+                        : "Simulation unavailable."
+        );
+
+        // 🔥 For now returning only RAG inside list
+        // Later you will add Monte Carlo response here
+        // 5️⃣ Call Monte Carlo (Python API)
+        AnalysisResponse monteCarloResponse = callMonteCarloService(request);
+
+// 6️⃣ Return BOTH
+        return List.of(ragResponse, monteCarloResponse);
+
+    }
+    private AnalysisResponse callMonteCarloService(ApplicantRequest request) {
+
+        String pythonUrl = "http://localhost:8000/analyze";
+
+        try {
+            return restTemplate.postForObject(
+                    pythonUrl,
+                    request,
+                    AnalysisResponse.class
+            );
+        } catch (Exception e) {
+
+            // fallback if python fails
+            AnalysisResponse fallback = new AnalysisResponse();
+            fallback.setApplicationId(request.getApplicationId());
+            fallback.setName(request.getApplicantDetails().getName());
+            fallback.setScore(0);
+            fallback.setStatus("REJECTED");
+            fallback.setAiNarrative("Monte Carlo service unavailable.");
+
+            return fallback;
+        }
     }
 
-    private Map<Scenario, Integer> mapScenariosToSurvival(List<Scenario> originalScenarios, List<ScenarioResult> aiResults) {
-        Map<Scenario, Integer> resultMap = new HashMap<>();
+    // ✅ FIXED: NOW RETURNS List<Scenario>
+    private List<Scenario> mapScenariosToSurvival(
+            List<Scenario> originalScenarios,
+            List<ScenarioResult> aiResults) {
+
+        if (originalScenarios == null) {
+            return Collections.emptyList();
+        }
+
+        Map<String, Integer> survivalMap = new HashMap<>();
+
+        if (aiResults != null) {
+            survivalMap = aiResults.stream()
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toMap(
+                            r -> r.getName().toLowerCase(),
+                            ScenarioResult::getSurvivalRate,
+                            (a, b) -> a
+                    ));
+        }
 
         for (Scenario scenario : originalScenarios) {
-            int survivalRate = -1;
-            for (ScenarioResult res : aiResults) {
-                if (res.getName().equalsIgnoreCase(scenario.getName())) {
-                    survivalRate = res.getSurvivalRate();
-                    break;
-                }
-            }
-            resultMap.put(scenario, survivalRate);
+
+            int survivalRate = survivalMap.getOrDefault(
+                    scenario.getName().toLowerCase(),
+                    -1
+            );
+
+            scenario.setSurvivalRate(survivalRate);
         }
 
-        return resultMap;
+        return originalScenarios;
     }
 
-
     private DigitalTwin generateTwin(ApplicantRequest request) {
-        BeanOutputConverter<DigitalTwin> converter = new BeanOutputConverter<>(DigitalTwin.class);
+
+        BeanOutputConverter<DigitalTwin> converter =
+                new BeanOutputConverter<>(DigitalTwin.class);
+
         String prompt = """
             You are a Credit Risk AI. Create a Behavioral Digital Twin.
             DATA: %s
-            LOGIC:
-            - liquidity_buffer: (Limit - Balance) / (Est. Monthly Spend).
-            - spending_elasticity: High (0.85) if 'Transactor' & Renting. Low (0.2) if 'Revolver'.
-            - income_volatility: Format "High (0.35)" / "Low (0.05)".
-            - burn_rate: Est. Fixed Costs.
-            - archetype: 2-word summary.
             Return JSON only.
             """.formatted(request.toString());
-        return chatClient.prompt().user(prompt).call().entity(converter);
-    }
-
-    private List<Scenario> generateScenarios(ApplicantRequest request) {
-        BeanOutputConverter<List<Scenario>> converter = new BeanOutputConverter<>(
-                new ParameterizedTypeReference<List<Scenario>>() {});
-        String prompt = """
-            You are an Economic Risk Engine. Generate 5 unique stress scenarios.
-            PROFILE: Job=%s, Sector=%s, City=%s
-            RULES:
-            1. 'name': Specific to sector.
-            2. 'likelihood': 0.0-1.0.
-            3. 'impact_type': 'income_cut', 'expense_hike', 'one_time_loss'.
-            4. 'impact_value': e.g. 0.5.
-            Return JSON list only.
-            """.formatted(request.getApplicantDetails().getJobTitle(), request.getApplicantDetails().getSector(), request.getApplicantDetails().getCity());
-        return chatClient.prompt().user(prompt).call().entity(converter);
-    }
-
-    private SimulationResult runSimulation(DigitalTwin twin, List<Scenario> scenarios) {
-        BeanOutputConverter<SimulationResult> converter = new BeanOutputConverter<>(SimulationResult.class);
-
-        String prompt = """
-            You are a Stochastic Simulation Engine.
-            
-            INPUTS:
-            1. Digital Twin: %s
-            2. Scenarios: %s
-            
-            TASK:
-            Simulate the user's financial survival for EACH scenario based on their Twin Profile (Liquidity/Elasticity).
-            
-            LOGIC:
-            - If 'spending_elasticity' is High (>0.6), they survive 'expense_hike' better.
-            - If 'liquidity_buffer' is Low (<2.0), they fail 'income_cut' scenarios > 2 months.
-            
-            OUTPUT:
-            1. 'overallScore': 0-100 (Weighted average of survival).
-            2. 'narrative': Brief summary.
-            3. 'scenarioSurvivalRates': List matching input scenarios with 'survivalRate' (0-100).
-            
-            Return strictly JSON matching the schema.
-            """.formatted(twin.toString(), scenarios.toString());
 
         return chatClient.prompt()
-                .user(u -> u.text(prompt))
+                .user(prompt)
                 .call()
                 .entity(converter);
     }
 
+    private List<Scenario> generateScenarios(ApplicantRequest request) {
+
+        BeanOutputConverter<List<Scenario>> converter =
+                new BeanOutputConverter<>(
+                        new ParameterizedTypeReference<List<Scenario>>() {}
+                );
+
+        String prompt = """
+            You are an Economic Risk Engine. Generate 5 unique stress scenarios.
+            PROFILE: Job=%s, CityTier=%s, Housing=%s
+            Return JSON list only.
+            """.formatted(
+                request.getApplicantDetails().getJobTitle(),
+                request.getApplicantDetails().getCityTier(),
+                request.getApplicantDetails().getHousingStatus()
+        );
+
+        return chatClient.prompt()
+                .user(prompt)
+                .call()
+                .entity(converter);
+    }
+
+    private SimulationResult runSimulation(DigitalTwin twin,
+                                           List<Scenario> scenarios) {
+
+        BeanOutputConverter<SimulationResult> converter =
+                new BeanOutputConverter<>(SimulationResult.class);
+
+        String prompt = """
+            You are a Stochastic Simulation Engine.
+            INPUTS:
+            Digital Twin: %s
+            Scenarios: %s
+            
+            OUTPUT:
+            - overallScore (0-100)
+            - narrative
+            - scenarioSurvivalRates (with survivalRate 0-100)
+            
+            Return strict JSON.
+            """.formatted(twin.toString(), scenarios.toString());
+
+        return chatClient.prompt()
+                .user(prompt)
+                .call()
+                .entity(converter);
+    }
+
+    // ---------------------------
+    // Simulation Result DTOs
+    // ---------------------------
 
     @Data
     public static class SimulationResult {
